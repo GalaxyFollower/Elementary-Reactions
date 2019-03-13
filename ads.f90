@@ -1,6 +1,7 @@
 program deltaG
 implicit none
 integer  ,  parameter                   ::      dp = selected_real_kind(15, 307)
+integer                                 ::      error_flag                                !for qvib subroutine checking
 integer                                 ::      alloc_err                                 !Deallocation status for allocatable arrays
 integer                                 ::      s                                         !The number of reactants, products, or transition states        
 integer                                 ::      i                                         !variable for reactants, products and TS loops     
@@ -22,6 +23,8 @@ real(dp) ,  allocatable, dimension (:)  ::      Ertot,Eptot,Etstot              
 real(dp) ,  allocatable, dimension (:)  ::      qvibrtot,qvibptot,qvibtstot               !total vibrational frequency of reactants,product and TS
 real(dp) ,  allocatable, dimension (:)  ::      qelec
 real(dp) ,  allocatable, dimension (:)  ::      Keq,kf,kr
+real(dp)                                ::      cutoff                                    !cutoff value for frequencies
+
 Na      = 6.02214076e23
 kbSI    = 1.380649e-23
 N0      = 1.866010378e19
@@ -36,14 +39,44 @@ call help()
 !get Temperatures
 write(*,*) 'please insert the molecular weight of your adsorbate in g/mol'
 read(*,*) M
+
+if ( M < 0)  then                    !FLAG!
+    write(*,*) " ERROR: Molecular weight cannot be negative!!!"
+    write(*,*) " The program is going to exit"
+    call EXIT(0)
+end if
+
+
 write(*,*) 'Please type the temperature range you wish in the following order:'
 write(*,*) 'Lower value of T. Higher value of T. Temperature interval'
 read (*,*) LT, HT, IT
+
+if (LT > HT .or. LT < 0 .or. HT < 0 .or. IT < 0)  then                    !FLAG!
+    write(*,*) " ERROR: Your lower T is higher than your higher T or one of , &
+                 LT, HT, or IT is negative!!!"
+    write(*,*) " The program is going to exit"
+    call EXIT(0)
+end if
+
+
+nTemp=((HT-LT)/IT)+1
+
+if (nTemp == 0)  then                    !FLAG!
+    write(*,*) " ERROR: Your have defined no Temperrature, nothing to do!!!"
+    write(*,*) " The program is going to exit"
+    call EXIT(0)
+end if
+
+
+
 nTemp=((HT-LT)/IT)+1
 allocate (T(nTemp))
 do i=1,nTemp
    T(i)=LT+(i-1)*IT
 end do
+
+write(*,*) " Please enter you cutoff value for frequencies, we usually use 50 or 100 "
+read (*,*) cutoff
 
 !allocatable arrays for calculation in different T
 allocate(delE(nTemp))
@@ -61,6 +94,14 @@ allocate(delG(nTemp))
 do k = 1, nTemp
         open (unit=990, file = 'lnq', status='old', action = 'read', iostat = ierror)
         read(990,*,iostat = ierror) part
+         if (ierror /=0 .or. part == 0) then                  !!!!FALG
+           write(*,*) " Problem with reading file: lnq "
+           write(*,*) " probable causes: misspell its name, #of Temperature,&
+                        greater number of partition functions you have in your lnq file, it is empty, you do not,&
+                        have that file at all"
+           write(*,*) " The program is going to exit"
+           call EXIT(0)
+        end if
           qtotr1(k) = exp(part)
 end do
   close(990)
@@ -91,13 +132,19 @@ allocate (freq(nfreq))
    freqtot      =       0.0
    open (unit=99, file = 'Reactant-1', status='old', action = 'read', iostat = ierror)
    read(99,*,iostat = ierror) scfr(1)
-      !qvibr(1) = exp(lnqvibr(1))    
+        if (ierror /=0 .or. scfr(1) == 0) then                  !!!!FALG
+           write(*,*) " Problem with reading file: Reactant-1 "
+           write(*,*) " You probably misspelled its name or it is empty"
+           write(*,*) " The program is going to exit"
+           call EXIT(0)
+        end if
+          
         do i=1,nfreq
                 read(99,*, iostat = ierror) freq(i)
                 if (ierror /=0) exit
                 if (freq(i) == 0) exit
-                if (freq(i) < 50) then
-                        freq(i) = 50
+                if (freq(i) < cutoff) then
+                        freq(i) = cutoff
                 end if
                 freqtot=freqtot+freq(i)
         end do
@@ -107,6 +154,8 @@ allocate (freq(nfreq))
         qvibr(1)=qtotr1(k)   ! this is the total partion function for gas phase
  
  close(99)
+
+
 deallocate(freq, stat= alloc_err)
 
 
@@ -117,8 +166,8 @@ Temp = T(k)
                 write(filename,100) i
                 100 format('Reactant-', I1)
                 call q(filename,Temp,qvib,ZPE,scf)
+                if ( error_flag == 1  ) exit           !FLAG
                 qvibr(i) = qvib
-                write(*,*) "qvib(2)= ", qvibr(2)
                 scfr(i)  = scf
                 ZPEr(i)  = ZPE
                 ZPCr(i)  = scfr(i)+ZPEr(i)
@@ -133,6 +182,7 @@ deallocate(qvibr,lnqvibr,scfr,ZPEr,ZPCr, stat = alloc_err)
                 write(filename,120) i
                 120 format('Product-', I1)
                 call q(filename,Temp,qvib,ZPE,scf)
+                if ( error_flag == 1  ) exit           !FLAG
                 qvibp = qvib
                 scfp  = scf
                 ZPEp  = ZPE
@@ -206,8 +256,9 @@ real     ,  parameter                   ::      c  = 299792458                  
 
 !local variable
 real(dp) ,  allocatable, dimension (:)  ::      freq
-real(dp)                                ::      freqtot
+real(dp)                                ::      freqtot, cutoff
 integer                                 ::      i,j,ierror,alloc_err,nfreq
+integer                                 ::      error_flag
 
 !parameter types and definition
 character(20)    ,  intent(in)                  ::      filename 
@@ -232,12 +283,21 @@ allocate (freq(nfreq))
    open (unit=99, file = filename, status='old', action = 'read', iostat = ierror)
    read(99,*,iostat = ierror) scf
          
+        if (ierror /=0 .or. scf == 0) then                  !!!!FALG
+           write(*,*) " Problem with reading file:  ", filename
+           write(*,*) " You probably misspelled its name or it is empty"
+           write(*,*) " The program is going to exit"
+           error_flag = 1
+           call EXIT(0)
+        end if
+
+
         do i=1,nfreq
                 read(99,*, iostat = ierror) freq(i)
                 if (ierror /=0) exit
                 if (freq(i) == 0) exit
-                if (freq(i) < 50) then
-                        freq(i) = 50
+                if (freq(i) < cutoff) then
+                        freq(i) = cutoff
                 end if       
                 freqtot=freqtot+freq(i)
                 qvib=qvib*(1/(1-exp((-h*freq(i)*100*c)/(kb*Temp))))
@@ -253,14 +313,17 @@ subroutine help()
 integer         ::      status = 0
 character(10)   ::      answer
 write (*,950)
-   950 format(//,1X,"This code is written  by Mehdi Zare in 6/4/2018 for calculating reaction properties of " ,&
-                 " adsorption/desorption",&
-                //," It is written for reaction A(g)+*<==>A*",&
-                 //," You need to have four input files for this code:",&
-                //," Reactant-1, Reactant-2, Product-1: The first line of these",&
-                " three files is SCF energy and the rest is frequencies:",&
-                //," HINT: DO NOT forget to remove required frequencies of gas phase (Reactant-1)",&
-                //," And you also need lnq file which contains partition function for Reactant-1 at different temperatures ",//)
+   950 format(//,"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!WARNING!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" ,&
+               /,"! This code is written  by Mehdi Zare in 6/4/2018 for calculating reaction properties of!" ,&
+               /,"!                             adsorption / desorption Reaction                          !" ,&
+               /,"! It is written for reaction:     A(g)   +   *   <==>   A*                              !" ,&
+               /,"! You need to have four input files for this code:                                      !" ,&
+               /,"!             Reactant-1, Reactant-2, Product-1: The first line of these                !" ,&
+               /,"! three files is SCF energy and the rest are frequencies.                               !" ,&
+               /,"!      HINT: DO NOT FORGET to remove required frequencies of gas phase (Reactant-1)     !" ,&
+               /,"! And you also need lnq file which contains partition function for Reactant-1 at        !" ,&
+               /,"! different temperatures.                                                               !" ,&
+               /,"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!WARNING!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"//)
    250  write (*,960)
         960 format (1X,"Do you still want to use this code? type yes or no",//)
         read (*,*) answer
